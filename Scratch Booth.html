@@ -60,6 +60,7 @@ body{font-family:var(--f-body);font-size:15px;line-height:1.5;
 @media (prefers-reduced-motion:reduce){.judge.show .j,.judge.show .t{animation:fade .9s linear forwards}@keyframes fade{0%,70%{opacity:1}100%{opacity:0}}}
 .hint{position:absolute;left:50%;bottom:5%;transform:translateX(-50%);background:rgba(10,11,14,.82);color:var(--ink);border:1px solid var(--line);font-size:13px;padding:6px 12px;border-radius:999px;white-space:nowrap;pointer-events:none}
 .deck-ctrl{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.diag{text-align:center;font-family:var(--f-mono);font-size:11px;color:var(--muted);margin:0}
 
 /* controls */
 button{font:inherit;color:inherit}
@@ -138,6 +139,7 @@ kbd{font-family:var(--f-mono);font-size:11.5px;background:var(--panel-2);border:
           <button id="rpm45" aria-pressed="false">45</button>
         </div>
       </div>
+      <p class="diag" id="diag">audio: off</p>
     </section>
 
     <section class="mixer" aria-label="믹서">
@@ -302,19 +304,29 @@ function initAudio(){
     master.connect(ac.destination);
     drumBus=ac.createGain();drumBus.gain.value=.55;drumBus.connect(master);
     const deckGain=ac.createGain();deckGain.gain.value=1;deckGain.connect(master);
-    let ok=false;
+    let ok=false, node=null;
+    const timeout=(ms)=>new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),ms));
     try{
       if(ac.audioWorklet){
         const url=URL.createObjectURL(new Blob([WORKLET_SRC],{type:"application/javascript"}));
-        await ac.audioWorklet.addModule(url);
-        const node=new AudioWorkletNode(ac,"deck-proc",{numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[1]});
+        await Promise.race([ac.audioWorklet.addModule(url),timeout(2500)]);
+        node=new AudioWorkletNode(ac,"deck-proc",{numberOfInputs:0,numberOfOutputs:1,outputChannelCount:[1]});
         node.port.onmessage=e=>onReport(e.data);
         node.connect(deckGain);
         send=m=>node.port.postMessage(m);
-        ok=true;
+        ok=true;engine="worklet";
       }
     }catch(e){ok=false;}
+    // watchdog: if the worklet never produces audio once the context runs, fall back
+    if(ok){
+      const t0=performance.now();
+      while(ac.state!=="running"&&performance.now()-t0<15000)await new Promise(r=>setTimeout(r,100));
+      const t1=performance.now();
+      while(!rep.have&&performance.now()-t1<900)await new Promise(r=>setTimeout(r,50));
+      if(ac.state==="running"&&!rep.have){try{node.disconnect();}catch(e){}ok=false;}
+    }
     if(!ok){
+      engine="script";
       const Core=new Function(CORE_SRC+";return DeckCore;")();
       const core=new Core(SR);
       const sp=ac.createScriptProcessor(512,1,1);
@@ -343,10 +355,18 @@ function ensureCtx(){
   try{const b=ac.createBuffer(1,1,ac.sampleRate),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start(0);}catch(e){}
   updateSoundUI();
 }
+let engine="-";
 function updateSoundUI(){
-  const on=!!ac&&ac.state==="running", b=document.getElementById("soundBtn");
-  if(!b)return;
-  b.setAttribute("aria-pressed",on);b.lastChild.textContent=on?"SOUND ON":"탭해서 소리 켜기";
+  const on=!!ac&&ac.state==="running", b=document.getElementById("soundBtn"), d=document.getElementById("diag");
+  if(b){b.setAttribute("aria-pressed",on);b.lastChild.textContent=on?"SOUND ON":"탭해서 소리 켜기";}
+  if(d)d.textContent=`audio: ${ac?ac.state:"off"} · engine: ${engine} · ${ac?ac.sampleRate+"Hz":""}`;
+}
+setInterval(updateSoundUI,500);
+function testBeep(){
+  if(!ac)return;
+  const t=ac.currentTime+.02,o=ac.createOscillator(),g=ac.createGain();
+  o.frequency.value=880;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.5,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+.25);
+  o.connect(g).connect(ac.destination);o.start(t);o.stop(t+.3);
 }
 ["touchend","pointerup","click","keydown"].forEach(t=>addEventListener(t,()=>{ensureCtx();initAudio();},{capture:true,passive:true}));
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&ac&&ac.state!=="running"){try{ac.resume();}catch(e){}}});
@@ -658,6 +678,7 @@ function faderChanged(){
 faderChanged();
 
 /* ---------- buttons ---------- */
+$("soundBtn").addEventListener("click",()=>{ensureCtx();initAudio();testBeep();});
 $("startStop").addEventListener("click",()=>{motorOn=!motorOn;$("startStop").setAttribute("aria-pressed",motorOn);send({type:"motor",on:motorOn,speed});initAudio();});
 function setSpeed(s){speed=s;$("rpm33").setAttribute("aria-pressed",s===1);$("rpm45").setAttribute("aria-pressed",s!==1);send({type:"motor",on:motorOn,speed});}
 $("rpm33").addEventListener("click",()=>setSpeed(1));
