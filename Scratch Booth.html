@@ -131,6 +131,7 @@ kbd{font-family:var(--f-mono);font-size:11.5px;background:var(--panel-2);border:
         <div class="hint" id="hint">레코드를 잡고 ↺ ↻ 앞뒤로 문질러 보세요</div>
       </div>
       <div class="deck-ctrl">
+        <button class="btn" id="soundBtn" aria-pressed="false"><span class="lamp"></span><span>탭해서 소리 켜기</span></button>
         <button class="btn" id="startStop" aria-pressed="true"><span class="lamp"></span>START · STOP</button>
         <div class="seg" role="group" aria-label="회전 속도">
           <button id="rpm33" aria-pressed="true">33</button>
@@ -294,9 +295,7 @@ function onReport(d){rep.pos=d.pos;rep.vel=d.vel;rep.t=performance.now();rep.hav
 function initAudio(){
   if(initing) return initing;
   initing=(async()=>{
-    const AC=window.AudioContext||window.webkitAudioContext;
-    ac=new AC({latencyHint:"interactive"});
-    if(ac.state!=="running"){try{await ac.resume();}catch(e){}}
+    ensureCtx();
     if(ac.sampleRate!==SR){SR=ac.sampleRate;SPR=SR*REV_SEC;const ratio=SR/48000;visPos*=ratio;handPos*=ratio;buildSample();}
     master=ac.createDynamicsCompressor();
     master.threshold.value=-10;master.ratio.value=4;master.attack.value=.003;master.release.value=.12;
@@ -335,6 +334,22 @@ function initAudio(){
   })();
   return initing;
 }
+
+/* iPad/iPhone: audio may only start inside a tap (touchend), not on touch-down */
+function ensureCtx(){
+  try{if(navigator.audioSession)navigator.audioSession.type="playback";}catch(e){} // play even in silent mode (iPadOS 17+)
+  if(!ac){const AC=window.AudioContext||window.webkitAudioContext;ac=new AC({latencyHint:"interactive"});ac.onstatechange=updateSoundUI;}
+  if(ac.state!=="running"){try{ac.resume();}catch(e){}}
+  try{const b=ac.createBuffer(1,1,ac.sampleRate),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start(0);}catch(e){}
+  updateSoundUI();
+}
+function updateSoundUI(){
+  const on=!!ac&&ac.state==="running", b=document.getElementById("soundBtn");
+  if(!b)return;
+  b.setAttribute("aria-pressed",on);b.lastChild.textContent=on?"SOUND ON":"탭해서 소리 켜기";
+}
+["touchend","pointerup","click","keydown"].forEach(t=>addEventListener(t,()=>{ensureCtx();initAudio();},{capture:true,passive:true}));
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&ac&&ac.state!=="running"){try{ac.resume();}catch(e){}}});
 
 /* ---------- drums ---------- */
 let noiseBuf=null;
